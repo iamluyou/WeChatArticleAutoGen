@@ -1,0 +1,35 @@
+import os
+from dotenv import load_dotenv
+
+load_dotenv()
+
+# ARK / 豆包 API 配置
+ARK_API_KEY = os.getenv("ARK_API_KEY", "")
+ARK_BASE_URL = os.getenv("ARK_BASE_URL", "https://ark.cn-beijing.volces.com/api/v3")
+ARK_MODEL = os.getenv("ARK_MODEL", "doubao-seed-2-0-pro-260215")
+
+# LLM 参数
+LLM_TEMPERATURE = float(os.getenv("LLM_TEMPERATURE", "0.7"))
+LLM_TOP_P = float(os.getenv("LLM_TOP_P", "0.9"))
+
+# 图片策略
+MAX_SEND_IMG_NUM = int(os.getenv("MAX_SEND_IMG_NUM", "3"))
+
+# 输出配置
+OUTPUT_DIR = os.getenv("OUTPUT_DIR", "result")
+STYLE_THEME = os.getenv("STYLE_THEME", "formal")
+
+# 并发配置
+MAX_CONCURRENT = int(os.getenv("MAX_CONCURRENT", "3"))
+
+# 爬虫配置
+HTTP_PROXY = os.getenv("HTTP_PROXY", "")
+CRAWL_TIMEOUT = float(os.getenv("CRAWL_TIMEOUT", "30.0"))
+COOKIES = os.getenv("COOKIES", "{}")
+
+# 图片校验
+CHECK_IMAGE_URLS = os.getenv("CHECK_IMAGE_URLS", "false").lower() == "true"
+
+# 重试策略
+MAX_RETRIES = int(os.getenv("MAX_RETRIES", "3"))
+RETRY_DELAYS = [2, 4, 8]

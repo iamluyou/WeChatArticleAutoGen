@@ -1,0 +1,39 @@
+{
+    "model": "doubao-seed-2-0-pro-260215",
+    "input": [
+        {
+            "role": "system",
+            "content": [
+                {
+                    "type": "input_text",
+                    "text": "你是一位资深微信公众号内容编辑。"
+                }
+            ]
+        },
+        {
+            "role": "user",
+            "content": [
+                {
+                    "type": "input_text",
+                    "text": "请优化以下文章，标题：示例文章标题\n\n正文内容..."
+                },
+                {
+                    "type": "input_image",
+                    "image_url": "https://example.com/image1.jpg"
+                },
+                {
+                    "type": "input_text",
+                    "text": "[图片1上方] 这是图片前的文字..."
+                },
+                {
+                    "type": "input_image",
+                    "image_url": "https://example.com/image2.jpg"
+                },
+                {
+                    "type": "input_text",
+                    "text": "[图片2上方] 后续内容..."
+                }
+            ]
+        }
+    ]
+}
