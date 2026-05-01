@@ -474,11 +474,11 @@ class TestReadLocalMarkdown:
 
 # ==================== llm_processor.py 测试（Mock API） ====================
 
-class TestBuildInputContent:
-    """LLM 输入构建测试"""
+class TestBuildUserContent:
+    """LLM 输入构建测试（OpenAI Chat Completions 格式）"""
 
     def test_text_only(self):
-        from llm_processor import _build_input_content
+        from llm_processor import _build_user_content
         from crawler import ArticleData, ImageData
 
         article = ArticleData(
@@ -487,13 +487,13 @@ class TestBuildInputContent:
             images=[],
             videos=[],
         )
-        content = _build_input_content(article, send_images=False)
+        content = _build_user_content(article, send_images=False)
         assert len(content) == 1
-        assert content[0]["type"] == "input_text"
+        assert content[0]["type"] == "text"
         assert "测试文章" in content[0]["text"]
 
     def test_with_images_send(self):
-        from llm_processor import _build_input_content
+        from llm_processor import _build_user_content
         from crawler import ArticleData, ImageData
 
         article = ArticleData(
@@ -504,13 +504,16 @@ class TestBuildInputContent:
                 ImageData(url="https://example.com/2.jpg", alt="图2", index=2),
             ],
         )
-        content = _build_input_content(article, send_images=True)
+        content = _build_user_content(article, send_images=True)
         # 应有文本 + 2张图片 + 2个图片说明
-        input_images = [c for c in content if c["type"] == "input_image"]
-        assert len(input_images) == 2
+        image_items = [c for c in content if c["type"] == "image_url"]
+        assert len(image_items) == 2
+        # 验证 image_url 格式
+        assert "url" in image_items[0]["image_url"]
+        assert image_items[0]["image_url"]["url"] == "https://example.com/1.jpg"
 
     def test_image_limit(self):
-        from llm_processor import _build_input_content
+        from llm_processor import _build_user_content
         from crawler import ArticleData, ImageData
 
         # 模拟 5 张图片，但只发 3 张
@@ -523,184 +526,85 @@ class TestBuildInputContent:
                     for i in range(1, 6)
                 ],
             )
-            content = _build_input_content(article, send_images=True)
-            input_images = [c for c in content if c["type"] == "input_image"]
-            assert len(input_images) == 3
+            content = _build_user_content(article, send_images=True)
+            image_items = [c for c in content if c["type"] == "image_url"]
+            assert len(image_items) == 3
             # 检查说明文本
-            text_items = [c for c in content if c["type"] == "input_text"]
+            text_items = [c for c in content if c["type"] == "text"]
             all_text = " ".join(t["text"] for t in text_items)
             assert "5 张图片" in all_text
             assert "前 3 张" in all_text
 
 
-class TestBuildPayload:
-    """LLM 请求构建测试"""
+class TestBuildCreateKwargs:
+    """chat.completions.create 参数构建测试"""
 
-    def test_payload_structure(self):
-        from llm_processor import _build_payload
-        from crawler import ArticleData
+    def test_kwargs_structure(self):
+        from llm_processor import _build_create_kwargs
 
-        article = ArticleData(
-            title="测试",
-            content_text="正文",
-        )
-        payload = _build_payload(article)
+        kwargs = _build_create_kwargs("test-model", [{"type": "text", "text": "hello"}])
 
-        assert "model" in payload
-        assert "input" in payload
-        assert len(payload["input"]) == 2  # system + user
-        assert payload["input"][0]["role"] == "system"
-        assert payload["input"][1]["role"] == "user"
-
-    def test_custom_model(self):
-        from llm_processor import _build_payload
-        from crawler import ArticleData
-
-        article = ArticleData(title="测试", content_text="正文")
-        payload = _build_payload(article, model="custom-model")
-        assert payload["model"] == "custom-model"
+        assert kwargs["model"] == "test-model"
+        assert len(kwargs["messages"]) == 2
+        assert kwargs["messages"][0]["role"] == "system"
+        assert kwargs["messages"][1]["role"] == "user"
+        assert kwargs["messages"][1]["content"] == [{"type": "text", "text": "hello"}]
 
 
-class TestParseResponse:
-    """LLM 响应解析测试"""
+class TestStripMarkdownWrapper:
+    """Markdown 包裹去除测试"""
 
-    def test_parse_output_text_type(self):
-        """Responses API 返回 output_text 类型"""
-        from llm_processor import _parse_response
+    def test_strip_markdown_prefix(self):
+        from llm_processor import _strip_markdown_wrapper
 
-        response = {
-            "output": [
-                {
-                    "type": "message",
-                    "content": [
-                        {"type": "output_text", "text": "# 测试标题\n\n正文内容"}
-                    ]
-                }
-            ]
-        }
-        result = _parse_response(response)
-        assert "# 测试标题" in result
-        assert "正文内容" in result
-
-    def test_parse_text_type(self):
-        """兼容 type: text 格式"""
-        from llm_processor import _parse_response
-
-        response = {
-            "output": [
-                {
-                    "type": "message",
-                    "content": [
-                        {"type": "text", "text": "# 测试标题\n\n正文内容"}
-                    ]
-                }
-            ]
-        }
-        result = _parse_response(response)
-        assert "# 测试标题" in result
-
-    def test_parse_input_text_type(self):
-        """兼容 type: input_text 格式"""
-        from llm_processor import _parse_response
-
-        response = {
-            "output": [
-                {
-                    "type": "message",
-                    "content": [
-                        {"type": "input_text", "text": "# 测试标题\n\n正文内容"}
-                    ]
-                }
-            ]
-        }
-        result = _parse_response(response)
-        assert "# 测试标题" in result
-
-    def test_parse_chat_completions_format(self):
-        """兼容 Chat Completions 格式"""
-        from llm_processor import _parse_response
-
-        response = {
-            "choices": [
-                {
-                    "message": {
-                        "content": "# Chat格式的标题\n\n正文内容"
-                    }
-                }
-            ]
-        }
-        result = _parse_response(response)
-        assert "# Chat格式的标题" in result
-
-    def test_strip_markdown_wrapper(self):
-        from llm_processor import _parse_response
-
-        response = {
-            "output": [
-                {
-                    "type": "message",
-                    "content": [
-                        {"type": "output_text", "text": "```markdown\n# 标题\n\n正文\n```"}
-                    ]
-                }
-            ]
-        }
-        result = _parse_response(response)
+        result = _strip_markdown_wrapper("```markdown\n# 标题\n\n正文\n```")
         assert not result.startswith("```")
         assert not result.endswith("```")
         assert "# 标题" in result
 
-    def test_empty_response(self):
-        from llm_processor import _parse_response
+    def test_strip_code_prefix(self):
+        from llm_processor import _strip_markdown_wrapper
 
-        response = {"output": []}
-        result = _parse_response(response)
+        result = _strip_markdown_wrapper("```\n# 标题\n\n正文\n```")
+        assert not result.startswith("```")
+        assert not result.endswith("```")
+
+    def test_no_wrapper(self):
+        from llm_processor import _strip_markdown_wrapper
+
+        result = _strip_markdown_wrapper("# 标题\n\n正文")
+        assert result == "# 标题\n\n正文"
+
+    def test_empty_string(self):
+        from llm_processor import _strip_markdown_wrapper
+
+        result = _strip_markdown_wrapper("")
         assert result == ""
-
-    def test_multiple_content_items(self):
-        """多个 content item 拼接"""
-        from llm_processor import _parse_response
-
-        response = {
-            "output": [
-                {
-                    "type": "message",
-                    "content": [
-                        {"type": "output_text", "text": "# 标题"},
-                        {"type": "output_text", "text": "\n\n正文内容"},
-                    ]
-                }
-            ]
-        }
-        result = _parse_response(response)
-        assert "# 标题" in result
-        assert "正文内容" in result
 
 
 class TestProcessWithMock:
-    """使用 Mock API 测试 LLM 处理流程"""
+    """使用 Mock OpenAI Client 测试 LLM 处理流程"""
+
+    def _mock_response(self, content_text, prompt_tokens=100, completion_tokens=50, total_tokens=150):
+        """构造 Mock OpenAI 响应"""
+        mock_response = MagicMock()
+        mock_response.choices = [MagicMock()]
+        mock_response.choices[0].message.content = content_text
+        mock_response.usage = MagicMock()
+        mock_response.usage.prompt_tokens = prompt_tokens
+        mock_response.usage.completion_tokens = completion_tokens
+        mock_response.usage.total_tokens = total_tokens
+        return mock_response
 
     def test_process_sync_success(self):
         from llm_processor import process_sync
         from crawler import ArticleData
 
-        mock_response = {
-            "output": [
-                {
-                    "type": "message",
-                    "content": [
-                        {"type": "text", "text": "# 优化后的标题\n\n> 摘要：测试\n\n优化后的正文"}
-                    ]
-                }
-            ],
-            "usage": {
-                "input_tokens": 100,
-                "output_tokens": 50,
-                "total_tokens": 150,
-            }
-        }
+        mock_response = self._mock_response("# 优化后的标题\n\n> 摘要：测试\n\n优化后的正文")
+        mock_client = MagicMock()
+        mock_client.chat.completions.create.return_value = mock_response
 
-        with patch('llm_processor.call_ark_api_sync', return_value=mock_response):
+        with patch('llm_processor._get_sync_client', return_value=mock_client):
             article = ArticleData(title="测试", content_text="原始正文内容比较长")
             result = process_sync(article, send_images=False)
             assert "# 优化后的标题" in result
@@ -709,29 +613,21 @@ class TestProcessWithMock:
         from llm_processor import process_sync
         from crawler import ArticleData
 
-        mock_response = {
-            "output": [
-                {
-                    "type": "message",
-                    "content": [
-                        {"type": "text", "text": "# 成功"}
-                    ]
-                }
-            ],
-            "usage": {},
-        }
-
-        # 第一次失败，第二次成功
+        mock_response = self._mock_response("# 成功")
         call_count = 0
-        def mock_call(payload):
+
+        def mock_create(**kwargs):
             nonlocal call_count
             call_count += 1
             if call_count == 1:
                 raise Exception("API Error")
             return mock_response
 
-        with patch('llm_processor.call_ark_api_sync', side_effect=mock_call):
-            with patch('llm_processor.time.sleep'):  # 跳过等待
+        mock_client = MagicMock()
+        mock_client.chat.completions.create.side_effect = mock_create
+
+        with patch('llm_processor._get_sync_client', return_value=mock_client):
+            with patch('llm_processor.time.sleep'):
                 article = ArticleData(title="测试", content_text="正文")
                 result = process_sync(article, send_images=False)
                 assert "# 成功" in result
@@ -741,11 +637,50 @@ class TestProcessWithMock:
         from llm_processor import process_sync
         from crawler import ArticleData
 
-        with patch('llm_processor.call_ark_api_sync', side_effect=Exception("API Error")):
+        mock_client = MagicMock()
+        mock_client.chat.completions.create.side_effect = Exception("API Error")
+
+        with patch('llm_processor._get_sync_client', return_value=mock_client):
             with patch('llm_processor.time.sleep'):
                 article = ArticleData(title="测试", content_text="正文")
                 with pytest.raises(RuntimeError, match="LLM 调用失败"):
                     process_sync(article, send_images=False)
+
+    def test_process_sync_strip_markdown_wrapper(self):
+        """LLM 返回 ```markdown 包裹时应自动去除"""
+        from llm_processor import process_sync
+        from crawler import ArticleData
+
+        mock_response = self._mock_response("```markdown\n# 标题\n\n正文\n```")
+        mock_client = MagicMock()
+        mock_client.chat.completions.create.return_value = mock_response
+
+        with patch('llm_processor._get_sync_client', return_value=mock_client):
+            article = ArticleData(title="测试", content_text="正文")
+            result = process_sync(article, send_images=False)
+            assert not result.startswith("```")
+            assert "# 标题" in result
+
+    def test_process_sync_none_content(self):
+        """LLM 返回 None content 时应返回空字符串"""
+        from llm_processor import process_sync
+        from crawler import ArticleData
+
+        mock_response = MagicMock()
+        mock_response.choices = [MagicMock()]
+        mock_response.choices[0].message.content = None
+        mock_response.usage = MagicMock()
+        mock_response.usage.prompt_tokens = 10
+        mock_response.usage.completion_tokens = 0
+        mock_response.usage.total_tokens = 10
+
+        mock_client = MagicMock()
+        mock_client.chat.completions.create.return_value = mock_response
+
+        with patch('llm_processor._get_sync_client', return_value=mock_client):
+            article = ArticleData(title="测试", content_text="正文")
+            result = process_sync(article, send_images=False)
+            assert result == ""
 
 
 # ==================== formatter.py 测试 ====================
@@ -970,7 +905,6 @@ class TestEndToEndMock:
         """模拟完整流程"""
         from crawler import ArticleData, ImageData, VideoData
         from formatter import format_article
-        from llm_processor import _parse_response
 
         # 1. 模拟爬虫输出
         article = ArticleData(
@@ -987,7 +921,7 @@ class TestEndToEndMock:
             source_url="https://example.com/ai-article",
         )
 
-        # 2. 模拟 LLM 响应
+        # 2. 模拟 LLM 输出
         mock_llm_output = "# AI 技术深度解读\n\n> 摘要：人工智能技术正在快速发展\n\n近年来，AI 技术不断突破。\n\n[图片1]\n\n深度学习是核心技术。\n\n[图片2]\n\n大语言模型改变了行业。\n\n[视频1]\n\n未来充满期待。"
 
         # 3. 格式化

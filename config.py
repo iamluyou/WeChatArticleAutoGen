@@ -3,10 +3,13 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-# ARK / 豆包 API 配置
-ARK_API_KEY = os.getenv("ARK_API_KEY", "")
-ARK_BASE_URL = os.getenv("ARK_BASE_URL", "https://ark.cn-beijing.volces.com/api/v3")
-ARK_MODEL = os.getenv("ARK_MODEL", "doubao-seed-2-0-pro-260215")
+# LLM API 配置（兼容 OpenAI Chat Completions 协议）
+# 豆包/ARK:   base_url=https://ark.cn-beijing.volces.com/api/v3
+# DeepSeek:   base_url=https://api.deepseek.com
+# OpenAI:     base_url=https://api.openai.com/v1
+LLM_API_KEY = os.getenv("LLM_API_KEY", "")
+LLM_BASE_URL = os.getenv("LLM_BASE_URL", "https://ark.cn-beijing.volces.com/api/v3")
+LLM_MODEL = os.getenv("LLM_MODEL", "doubao-seed-2-0-pro-260215")
 
 # LLM 参数
 LLM_TEMPERATURE = float(os.getenv("LLM_TEMPERATURE", "0.7"))

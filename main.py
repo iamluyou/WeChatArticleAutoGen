@@ -7,7 +7,7 @@ import os
 import sys
 
 from config import (
-    ARK_MODEL,
+    LLM_MODEL,
     CHECK_IMAGE_URLS,
     CRAWL_TIMEOUT,
     HTTP_PROXY,
