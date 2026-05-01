@@ -104,8 +104,9 @@ def _build_user_content(article: ArticleData, send_images: bool = True) -> list:
 
         content.append({"type": "text", "text": full_text})
 
-        # 插入图片（多模态）
-        for img in images_to_send:
+        # 插入图片（多模态），仅使用 HTTP/HTTPS URL
+        valid_images = [img for img in images_to_send if img.url.startswith(("http://", "https://"))]
+        for img in valid_images:
             content.append({
                 "type": "image_url",
                 "image_url": {"url": img.url},
@@ -113,6 +114,13 @@ def _build_user_content(article: ArticleData, send_images: bool = True) -> list:
             content.append({
                 "type": "text",
                 "text": f"↑ 以上为 [图片{img.index}] {img.alt}".strip(),
+            })
+        # 记录被过滤的非 HTTP/HTTPS 图片
+        filtered_count = len(images_to_send) - len(valid_images)
+        if filtered_count > 0:
+            content.append({
+                "type": "text",
+                "text": f"\n\n（共过滤 {filtered_count} 张非HTTP/HTTPS图片，仅保留文字位置标记）",
             })
     else:
         content.append({"type": "text", "text": full_text})
