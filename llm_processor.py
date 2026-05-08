@@ -8,8 +8,10 @@ LLM 处理模块：基于 OpenAI 兼容协议，支持任意兼容 Chat Completi
 - 其他兼容 OpenAI Chat Completions 协议的 API 服务
 """
 import asyncio
+import os
 import time
 
+import httpx
 from openai import OpenAI, AsyncOpenAI
 
 from config import (
@@ -19,7 +21,6 @@ from config import (
     LLM_TEMPERATURE,
     LLM_TOP_P,
     MAX_RETRIES,
-    MAX_SEND_IMG_NUM,
     RETRY_DELAYS,
 )
 from crawler import ArticleData
@@ -73,59 +74,125 @@ def _get_async_client() -> AsyncOpenAI:
     return AsyncOpenAI(base_url=LLM_BASE_URL, api_key=LLM_API_KEY)
 
 
-def _build_user_content(article: ArticleData, send_images: bool = True) -> list:
-    """
-    构建 user message 的 content（OpenAI Chat Completions 多模态格式）
+# 图片下载最大尺寸（10MB），超过此大小的图片跳过
+_MAX_IMAGE_SIZE = 10 * 1024 * 1024
 
-    正文 content_text 中已包含 [图片N]/[视频N] 位置标记（由爬虫插入），
-    此处将前 N 张图片以多模态方式发送给 LLM，帮助 LLM 理解图片内容。
+
+def _download_image(url: str, save_dir: str, index: int, timeout: float = 15.0):
+    """
+    下载图片保存到本地。
+
+    图片会保存为 save_dir/图片N.ext（N 为 index），文件扩展名根据 Content-Type 或 URL 推断。
+    下载失败时返回 None。
+
+    Args:
+        url: 图片 URL
+        save_dir: 图片保存目录
+        index: 图片序号（用于文件命名）
+        timeout: 下载超时时间（秒）
+
+    Returns:
+        保存的本地文件路径，下载失败返回 None
+    """
+    try:
+        with httpx.Client(
+            timeout=httpx.Timeout(connect=5.0, read=timeout, write=5.0, pool=5.0),
+            follow_redirects=True,
+        ) as client:
+            response = client.get(url, headers={
+                "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36"
+            })
+            response.raise_for_status()
+
+            if len(response.content) > _MAX_IMAGE_SIZE:
+                logger.warning(f"图片过大 ({len(response.content)} bytes)，跳过: {url}")
+                return None
+
+            # 推断图片扩展名
+            content_type = response.headers.get("content-type", "")
+            ext_map = {
+                "image/png": ".png",
+                "image/jpeg": ".jpg",
+                "image/gif": ".gif",
+                "image/webp": ".webp",
+                "image/svg+xml": ".svg",
+                "image/bmp": ".bmp",
+            }
+
+            if content_type in ext_map:
+                ext = ext_map[content_type]
+            else:
+                url_lower = url.lower().split("?")[0]
+                if url_lower.endswith(".png"):
+                    ext = ".png"
+                elif url_lower.endswith(".gif"):
+                    ext = ".gif"
+                elif url_lower.endswith(".webp"):
+                    ext = ".webp"
+                elif url_lower.endswith(".svg"):
+                    ext = ".svg"
+                else:
+                    ext = ".jpg"
+
+            # 保存到本地
+            os.makedirs(save_dir, exist_ok=True)
+            local_path = os.path.join(save_dir, f"图片{index}{ext}")
+            with open(local_path, "wb") as f:
+                f.write(response.content)
+            logger.info(f"图片已保存: {local_path}")
+
+            return local_path
+    except Exception as e:
+        logger.warning(f"图片下载失败，跳过: {url} - {e}")
+        return None
+
+
+def _download_images(article: ArticleData, output_dir: str):
+    """
+    将文章中的图片下载到本地目录。
 
     Args:
         article: 文章数据
-        send_images: 是否发送图片给 LLM
+        output_dir: 图片保存目录
+    """
+    if not article.images:
+        return
+
+    downloaded = 0
+    skipped = 0
+    for img in article.images:
+        if not img.url.startswith(("http://", "https://")):
+            skipped += 1
+            continue
+        saved_path = _download_image(img.url, output_dir, img.index)
+        if saved_path:
+            downloaded += 1
+        else:
+            skipped += 1
+
+    logger.info(f"图片下载完成: 成功 {downloaded} 张, 跳过 {skipped} 张")
+
+
+def _build_user_content(article: ArticleData) -> str:
+    """
+    构建 user message 的内容（纯文本格式）。
+
+    正文 content_text 中已包含 [图片N]/[视频N] 位置标记（由爬虫插入），
+    LLM 输出时会保留这些占位标记，后续由格式化模块替换为实际图片。
+
+    Args:
+        article: 文章数据
 
     Returns:
-        content 数组，元素为 OpenAI Chat Completions 格式的 dict
+        纯文本字符串
     """
-    content = []
-
-    # 文章标题和正文（正文已包含 [图片N]/[视频N] 标记）
     full_text = f"请按系统指令要求润色以下文章：\n\n# {article.title}\n\n{article.content_text}"
 
-    if send_images and article.images:
-        images_to_send = article.images[:MAX_SEND_IMG_NUM]
-        # 在文本末尾附注图片说明
-        img_info = f"\n\n---\n文中包含 {len(article.images)} 张图片"
-        if len(article.images) > MAX_SEND_IMG_NUM:
-            img_info += f"，以下发送前 {MAX_SEND_IMG_NUM} 张供参考："
-        else:
-            img_info += "："
+    if article.images:
+        img_info = f"\n\n---\n文中包含 {len(article.images)} 张图片，用 [图片N] 占位，润色时请保留占位标记。"
         full_text += img_info
 
-        content.append({"type": "text", "text": full_text})
-
-        # 插入图片（多模态），仅使用 HTTP/HTTPS URL
-        valid_images = [img for img in images_to_send if img.url.startswith(("http://", "https://"))]
-        for img in valid_images:
-            content.append({
-                "type": "image_url",
-                "image_url": {"url": img.url},
-            })
-            content.append({
-                "type": "text",
-                "text": f"↑ 以上为 [图片{img.index}] {img.alt}".strip(),
-            })
-        # 记录被过滤的非 HTTP/HTTPS 图片
-        filtered_count = len(images_to_send) - len(valid_images)
-        if filtered_count > 0:
-            content.append({
-                "type": "text",
-                "text": f"\n\n（共过滤 {filtered_count} 张非HTTP/HTTPS图片，仅保留文字位置标记）",
-            })
-    else:
-        content.append({"type": "text", "text": full_text})
-
-    return content
+    return full_text
 
 
 def _strip_markdown_wrapper(text: str) -> str:
@@ -139,7 +206,7 @@ def _strip_markdown_wrapper(text: str) -> str:
     return text.strip()
 
 
-def _build_create_kwargs(model: str, user_content: list) -> dict:
+def _build_create_kwargs(model: str, user_content: str) -> dict:
     """构建 chat.completions.create 调用参数"""
     kwargs = {
         "model": model,
@@ -155,22 +222,31 @@ def _build_create_kwargs(model: str, user_content: list) -> dict:
     return kwargs
 
 
-async def process(article: ArticleData, model: str = "", send_images: bool = True) -> str:
+async def process(article: ArticleData, model: str = "", output_dir: str = "") -> str:
     """
     调用 LLM 优化文章内容（异步）
 
-    使用 OpenAI Chat Completions 兼容协议，支持任意兼容 OpenAI 协议的 API 服务。
+    先下载图片到本地目录（命名为 图片1.jpg、图片2.png 等），
+    再以纯文本方式调用 LLM，文本中用 [图片N] 占位符标记图片位置。
 
     Args:
         article: 爬虫抓取的文章数据
         model: 可选模型名称（覆盖默认配置）
-        send_images: 是否发送图片给 LLM
+        output_dir: 图片保存目录
 
     Returns:
         优化后的 Markdown 文本
     """
     model = model or LLM_MODEL
-    user_content = _build_user_content(article, send_images)
+
+    # 确定图片保存目录并下载图片
+    if not output_dir:
+        from utils import get_output_dir
+        from config import OUTPUT_DIR
+        output_dir = get_output_dir(OUTPUT_DIR)
+    _download_images(article, output_dir)
+
+    user_content = _build_user_content(article)
     logger.info(f"LLM 请求构建完成，模型: {model}, API Key: {mask_api_key(LLM_API_KEY)}")
 
     last_error = None
@@ -211,20 +287,31 @@ async def process(article: ArticleData, model: str = "", send_images: bool = Tru
     raise RuntimeError(f"LLM 调用失败，已重试 {MAX_RETRIES} 次: {last_error}")
 
 
-def process_sync(article: ArticleData, model: str = "", send_images: bool = True) -> str:
+def process_sync(article: ArticleData, model: str = "", output_dir: str = "") -> str:
     """
     调用 LLM 优化文章内容（同步）
+
+    先下载图片到本地目录（命名为 图片1.jpg、图片2.png 等），
+    再以纯文本方式调用 LLM，文本中用 [图片N] 占位符标记图片位置。
 
     Args:
         article: 爬虫抓取的文章数据
         model: 可选模型名称（覆盖默认配置）
-        send_images: 是否发送图片给 LLM
+        output_dir: 图片保存目录
 
     Returns:
         优化后的 Markdown 文本
     """
     model = model or LLM_MODEL
-    user_content = _build_user_content(article, send_images)
+
+    # 确定图片保存目录并下载图片
+    if not output_dir:
+        from utils import get_output_dir
+        from config import OUTPUT_DIR
+        output_dir = get_output_dir(OUTPUT_DIR)
+    _download_images(article, output_dir)
+
+    user_content = _build_user_content(article)
     logger.info(f"LLM 请求构建完成，模型: {model}, API Key: {mask_api_key(LLM_API_KEY)}")
 
     last_error = None

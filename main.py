@@ -11,14 +11,13 @@ from config import (
     CHECK_IMAGE_URLS,
     CRAWL_TIMEOUT,
     HTTP_PROXY,
-    MAX_SEND_IMG_NUM,
     OUTPUT_DIR,
     STYLE_THEME,
 )
 from crawler import crawl, read_local_markdown, ArticleData
 from formatter import format_article
 from logger import setup_logger
-from llm_processor import process, process_sync
+from llm_processor import process
 from utils import get_output_dir, get_unique_filepath, sanitize_filename
 
 logger = setup_logger("main")
@@ -38,14 +37,12 @@ def load_urls_from_file(filepath: str) -> list:
 async def process_single_url(
     url: str,
     model: str = "",
-    send_images: bool = True,
-    max_images: int = 0,
     style: str = "",
     output: str = "",
     check_images: bool = False,
-) -> tuple[bool, str]:
+) -> tuple:
     """
-    处理单个 URL：抓取 → LLM 优化 → 格式化 → 保存
+    处理单个 URL：抓取 → 下载图片 → LLM 优化 → 格式化 → 保存
 
     Returns:
         (success, message)
@@ -59,16 +56,12 @@ async def process_single_url(
             article.title = "untitled"
             logger.warning(f"文章无标题，使用默认标题: {url}")
 
-        # 2. LLM 优化
-        if max_images > 0:
-            import config
-            config.MAX_SEND_IMG_NUM = max_images
+        # 提前计算输出目录（图片下载和文件保存共用）
+        out_dir = output or OUTPUT_DIR
+        date_dir = get_output_dir(out_dir)
 
-        if not send_images:
-            import config
-            config.MAX_SEND_IMG_NUM = 0
-
-        md_text = await process(article, model=model, send_images=send_images)
+        # 2. 下载图片 + LLM 优化
+        md_text = await process(article, model=model, output_dir=date_dir)
 
         if not md_text:
             logger.error(f"LLM 输出为空: {url}")
@@ -78,8 +71,6 @@ async def process_single_url(
         html = format_article(md_text, article)
 
         # 4. 保存文件
-        out_dir = output or OUTPUT_DIR
-        date_dir = get_output_dir(out_dir)
         safe_title = sanitize_filename(article.title)
 
         html_path = get_unique_filepath(date_dir, safe_title, ".html")
@@ -102,13 +93,11 @@ async def process_single_url(
 async def process_local_md(
     filepath: str,
     model: str = "",
-    send_images: bool = True,
-    max_images: int = 0,
     style: str = "",
     output: str = "",
-) -> tuple[bool, str]:
+) -> tuple:
     """
-    处理本地 Markdown 文件：读取 → LLM 优化 → 格式化 → 保存
+    处理本地 Markdown 文件：读取 → 下载图片 → LLM 优化 → 格式化 → 保存
 
     Returns:
         (success, message)
@@ -121,16 +110,12 @@ async def process_local_md(
             article.title = "untitled"
             logger.warning(f"文章无标题，使用默认标题: {filepath}")
 
-        # LLM 优化
-        if max_images > 0:
-            import config
-            config.MAX_SEND_IMG_NUM = max_images
+        # 提前计算输出目录（图片下载和文件保存共用）
+        out_dir = output or OUTPUT_DIR
+        date_dir = get_output_dir(out_dir)
 
-        if not send_images:
-            import config
-            config.MAX_SEND_IMG_NUM = 0
-
-        md_text = await process(article, model=model, send_images=send_images)
+        # 下载图片 + LLM 优化
+        md_text = await process(article, model=model, output_dir=date_dir)
 
         if not md_text:
             logger.error(f"LLM 输出为空: {filepath}")
@@ -140,8 +125,6 @@ async def process_local_md(
         html = format_article(md_text, article)
 
         # 保存文件
-        out_dir = output or OUTPUT_DIR
-        date_dir = get_output_dir(out_dir)
         safe_title = sanitize_filename(article.title)
 
         html_path = get_unique_filepath(date_dir, safe_title, ".html")
@@ -164,8 +147,6 @@ async def process_local_md(
 async def process_urls(
     urls: list,
     model: str = "",
-    send_images: bool = True,
-    max_images: int = 0,
     style: str = "",
     output: str = "",
     check_images: bool = False,
@@ -181,8 +162,8 @@ async def process_urls(
     async def process_with_semaphore(url: str):
         async with semaphore:
             success, msg = await process_single_url(
-                url, model=model, send_images=send_images,
-                max_images=max_images, style=style,
+                url, model=model,
+                style=style,
                 output=output, check_images=check_images,
             )
             results.append((url, success, msg))
@@ -212,8 +193,6 @@ def main():
     parser.add_argument("--md", help="本地 Markdown 文件路径")
     parser.add_argument("--file", help="批量 URL 列表文件路径")
     parser.add_argument("--model", default="", help="LLM 模型名称")
-    parser.add_argument("--no-images", action="store_true", help="不发送图片给 LLM")
-    parser.add_argument("--max-images", type=int, default=0, help="发送给 LLM 的最大图片数量")
     parser.add_argument("--style", choices=["formal", "light", "tech"], default="", help="排版风格")
     parser.add_argument("--output", default="", help="输出目录")
     parser.add_argument("--check-images", action="store_true", help="校验图片 URL 有效性")
@@ -225,15 +204,11 @@ def main():
         import wechat_style
         wechat_style.STYLE_THEME = args.style
 
-    send_images = not args.no_images
-
     # 处理本地 Markdown 文件
     if args.md:
         success, msg = asyncio.run(process_local_md(
             args.md,
             model=args.model,
-            send_images=send_images,
-            max_images=args.max_images,
             style=args.style,
             output=args.output,
         ))
@@ -260,8 +235,6 @@ def main():
         success, msg = asyncio.run(process_single_url(
             urls[0],
             model=args.model,
-            send_images=send_images,
-            max_images=args.max_images,
             style=args.style,
             output=args.output,
             check_images=args.check_images,
@@ -275,8 +248,6 @@ def main():
         asyncio.run(process_urls(
             urls,
             model=args.model,
-            send_images=send_images,
-            max_images=args.max_images,
             style=args.style,
             output=args.output,
             check_images=args.check_images,
